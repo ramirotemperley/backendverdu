@@ -1,16 +1,28 @@
-const mongoose = require('mongoose');
+// config/database.js
+const mysql = require('mysql2/promise');
 
-const connectDB = async () => {
+const pool = mysql.createPool({
+  host: 'localhost',
+  user: 'root',
+  password: 'balcarce186',
+  database: 'Verduleria',
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0
+});
+
+async function connectDB() {
   try {
-    await mongoose.connect('mongodb://127.0.0.1:27017/Verduleria', {
-      useNewUrlParser: true,
-      useUnifiedTopology: true,
-    });
-    console.log("Conectado a MongoDB local");
-  } catch (err) {
-    console.error("Error conectando a MongoDB:", err.message);
-    process.exit(1); // Termina el proceso si falla la conexión
+    const connection = await pool.getConnection();
+    console.log('Conectado a MariaDB correctamente');
+    connection.release();
+  } catch (error) {
+    console.error('No se pudo conectar a MariaDB:', error);
+    process.exit(1);
   }
-};
+}
 
-module.exports = connectDB; // Exportar la función
+module.exports = {
+  connectDB,
+  pool
+};

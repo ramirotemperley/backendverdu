@@ -1,10 +1,13 @@
+// index.js
 const express = require('express');
-const connectDB = require('./config/database');
-const ventasRoutes = require('./routes/ventas'); // Rutas de ventas
-const articulosRoutes = require('./routes/articulos'); // Rutas de artículos
-const formasPagoRoutes = require('./routes/formasPago'); // Rutas de formas de pago
-const usuariosRoutes = require('./routes/usuarios'); // Rutas de usuarios
+const { connectDB } = require('./config/database'); // Asegúrate de que la ruta sea correcta
 const cors = require('cors');
+
+const ventasRoutes = require('./routes/ventas');
+const articulosRoutes = require('./routes/articulos');
+const formasPagoRoutes = require('./routes/formasPago');
+const usuariosRoutes = require('./routes/usuarios');
+
 const app = express();
 
 // Conectar a la base de datos
@@ -13,25 +16,19 @@ connectDB();
 // Middleware para parsear JSON
 app.use(express.json());
 
-// Configurar CORS para permitir peticiones desde el frontend
+// Configurar CORS
 app.use(cors());
 
-// Usar las rutas de ventas
+// Rutas
 app.use('/ventas', ventasRoutes);
-
-// Usar las rutas de artículos
 app.use('/articulos', articulosRoutes);
-
-// Usar las rutas de formas de pago
 app.use('/formas-pago', formasPagoRoutes);
-
-// Usar las rutas de usuarios
 app.use('/usuarios', usuariosRoutes);
 
-// Ruta raíz (opcional)
+// Ruta raíz
 app.get('/', (req, res) => res.send('API Running'));
 
-// Manejo de errores global (opcional)
+// Manejo de errores global
 app.use((err, req, res, next) => {
   console.error(err.stack);
   res.status(500).send('Algo salió mal!');

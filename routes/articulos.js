@@ -1,70 +1,146 @@
 const express = require('express');
 const router = express.Router();
-const Articulo = require('../models/Articulo');
+const { pool } = require('../config/database');
 
-// Obtener todos los artículos
+/**
+ * GET /articulos
+ * Obtiene todos los registros de la tabla "articulos".
+ * Supongamos que las columnas son: id, codigo, nombre
+ */
 router.get('/', async (req, res) => {
   try {
-    const articulos = await Articulo.find();
-    res.status(200).json(articulos);
+    // Aquí seleccionamos los campos: id, codigo, nombre
+    const [rows] = await pool.query('SELECT id, codigo, nombre FROM articulos');
+    res.json(rows);
   } catch (error) {
-    res.status(500).json({ error: 'Error al obtener los artículos', details: error.message });
+    res.status(500).json({
+      error: 'Error al obtener los artículos',
+      details: error.message,
+    });
   }
 });
 
-// Obtener un artículo por ID
+/**
+ * GET /articulos/:id
+ * Obtiene un artículo específico por su ID.
+ */
 router.get('/:id', async (req, res) => {
+  const { id } = req.params;
   try {
-    const articulo = await Articulo.findById(req.params.id);
-    if (!articulo) return res.status(404).json({ error: 'Artículo no encontrado' });
-    res.status(200).json(articulo);
+    const [rows] = await pool.query('SELECT id, codigo, nombre FROM articulos WHERE id = ?', [id]);
+    
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'Artículo no encontrado' });
+    }
+    
+    res.json(rows[0]);
   } catch (error) {
-    res.status(500).json({ error: 'Error al obtener el artículo', details: error.message });
+    res.status(500).json({
+      error: 'Error al obtener el artículo',
+      details: error.message,
+    });
   }
 });
 
-// Crear un nuevo artículo
+/**
+ * POST /articulos
+ * Crea un nuevo artículo.
+ * Debes mandar en el body (JSON):
+ * {
+ *   "codigo": "ABC123",
+ *   "nombre": "Mi Artículo"
+ * }
+ */
 router.post('/', async (req, res) => {
-    try {
-      const { codigo, nombre } = req.body;
-  
-      if (!codigo || !nombre) {
-        return res.status(400).json({ error: 'Código y nombre son obligatorios' });
-      }
-  
-      const nuevoArticulo = new Articulo({ codigo, nombre });
-      await nuevoArticulo.save();
-      res.status(201).json({ message: 'Artículo creado correctamente', articulo: nuevoArticulo });
-    } catch (error) {
-      res.status(500).json({ error: 'Error al crear el artículo', details: error.message });
-    }
-  });
-  
-// Actualizar un artículo existente
-router.put('/:id', async (req, res) => {
-    try {
-      const articuloActualizado = await Articulo.findByIdAndUpdate(
-        req.params.id,
-        req.body,
-        { new: true, runValidators: true }
-      );
-      if (!articuloActualizado) {
-        return res.status(404).json({ error: 'Artículo no encontrado para actualizar' });
-      }
-      res.json({ message: 'Artículo actualizado correctamente', articulo: articuloActualizado });
-    } catch (error) {
-      res.status(500).json({ error: 'Error al actualizar el artículo', details: error.message });
-    }
-  });
-  
-// Eliminar un artículo
-router.delete('/:id', async (req, res) => {
+  const { codigo, nombre } = req.body;
   try {
-    const articuloEliminado = await Articulo.findByIdAndDelete(req.params.id);
-    if (!articuloEliminado) return res.status(404).json({ error: 'Artículo no encontrado para eliminar' });
+    // Insertamos en la tabla (codigo, nombre)
+    const [result] = await pool.query(
+      'INSERT INTO articulos (codigo, nombre) VALUES (?, ?)',
+      [codigo, nombre]
+    );
+    
+    // result.insertId trae el ID del nuevo registro
+    res.status(201).json({
+      articulo: {
+        id: result.insertId,
+        codigo,
+        nombre
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: 'Error al crear el artículo',
+      details: error.message,
+    });
+  }
+});
+
+/**
+ * PUT /articulos/:id
+ * Actualiza un artículo existente.
+ * Ejemplo body (JSON):
+ * {
+ *   "codigo": "XYZ999",
+ *   "nombre": "Nombre actualizado"
+ * }
+ */
+router.put('/:id', async (req, res) => {
+  const { id } = req.params;
+  const { codigo, nombre } = req.body;
+
+  try {
+    // Verificamos si el artículo existe
+    const [existeArticulo] = await pool.query('SELECT id FROM articulos WHERE id = ?', [id]);
+    if (existeArticulo.length === 0) {
+      return res.status(404).json({ error: 'Artículo no encontrado' });
+    }
+
+    // Realizamos el UPDATE
+    await pool.query(
+      'UPDATE articulos SET codigo = ?, nombre = ? WHERE id = ?',
+      [codigo, nombre, id]
+    );
+
+    // Devolvemos el artículo actualizado
+    res.json({
+      articulo: {
+        id: Number(id),
+        codigo,
+        nombre
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: 'Error al actualizar el artículo',
+      details: error.message,
+    });
+  }
+});
+
+/**
+ * DELETE /articulos/:id
+ * Elimina un artículo por su ID.
+ */
+router.delete('/:id', async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    // Primero verificamos si existe
+    const [existeArticulo] = await pool.query('SELECT id FROM articulos WHERE id = ?', [id]);
+    if (existeArticulo.length === 0) {
+      return res.status(404).json({ error: 'Artículo no encontrado' });
+    }
+
+    // Eliminamos el registro
+    await pool.query('DELETE FROM articulos WHERE id = ?', [id]);
+
     res.json({ message: 'Artículo eliminado correctamente' });
   } catch (error) {
-    res.status(500).json({ error: 'Error al eliminar el artículo', details: error.message });
+    res.status(500).json({
+      error: 'Error al eliminar el artículo',
+      details: error.message,
+    });
   }
 });
 

@@ -1,128 +1,153 @@
 // routes/ventas.js
 const express = require('express');
 const router = express.Router();
-const Venta = require('../models/Venta');
+const { pool } = require('../config/database');
 
-console.log('Rutas de ventas cargadas');
-
-// Ruta de Prueba
-router.get('/test', (req, res) => {
-  res.send('Ruta de prueba funcionando correctamente');
-});
-
-// POST /ventas → Crear una nueva venta
+// Crear una venta nueva
 router.post('/', async (req, res) => {
-  console.log('Datos recibidos en POST /ventas:', req.body);
+  // Ejemplo de body:
+  // {
+  //   "totalVenta": 100.5,
+  //   "vendedorId": 1,
+  //   "formaPagoId": 2,
+  //   "articulos": [
+  //       { "articuloId": 1, "cantidad": 2, "precio": 30, "total": 60 },
+  //       { "articuloId": 2, "cantidad": 1, "precio": 40.5, "total": 40.5 }
+  //   ]
+  // }
   try {
-    const venta = new Venta(req.body);
-    await venta.save();
-    res.status(201).json({ message: 'Venta creada correctamente', venta });
-  } catch (err) {
-    console.error('Error al crear la venta:', err);
-    res.status(500).json({ error: 'Error al crear la venta', details: err.message });
+    const { totalVenta, vendedorId, formaPagoId, articulos } = req.body;
+
+    // 1) Insertamos la venta en la tabla Ventas
+    const [ventaResult] = await pool.execute(
+      `INSERT INTO Ventas (totalVenta, vendedorId, formaPagoId)
+       VALUES (?, ?, ?)`,
+      [totalVenta, vendedorId || null, formaPagoId || null]
+    );
+    const ventaId = ventaResult.insertId;
+
+    // 2) Insertamos artículos en VentaArticulos
+    //    Solo si en el body viene un array de articulos
+    if (Array.isArray(articulos)) {
+      for (const item of articulos) {
+        const { articuloId, cantidad, precio, total } = item;
+        await pool.execute(
+          `INSERT INTO VentaArticulos (ventaId, articuloId, cantidad, precio, total)
+           VALUES (?, ?, ?, ?, ?)`,
+          [ventaId, articuloId, cantidad, precio, total]
+        );
+      }
+    }
+
+    res.status(201).json({ message: 'Venta creada correctamente', ventaId });
+  } catch (error) {
+    console.error('Error al crear la venta:', error);
+    res.status(500).json({ error: 'Error al crear la venta', details: error.message });
   }
 });
 
-// GET /ventas → Obtener todas las ventas
+// Obtener todas las ventas
 router.get('/', async (req, res) => {
   try {
-    const ventas = await Venta.find();
+    // Podemos traer la info básica de la venta
+    const [ventas] = await pool.query('SELECT * FROM Ventas');
     res.status(200).json(ventas);
-  } catch (err) {
-    console.error(err);
+  } catch (error) {
+    console.error(error);
     res.status(500).json({ error: 'Error al obtener las ventas' });
   }
 });
 
-// GET /ventas/:id → Obtener una venta específica
+// Obtener una venta específica con sus artículos
 router.get('/:id', async (req, res) => {
-  const rawId = req.params.id;
-  const id = rawId.trim(); // Limpiar el ID
-
-  console.log('GET /ventas/:id llamada con id:', id);
+  const ventaId = req.params.id;
   try {
-    const venta = await Venta.findById(id);
-    if (!venta) {
+    // 1) Traemos la venta
+    const [ventaRows] = await pool.query('SELECT * FROM Ventas WHERE id = ?', [ventaId]);
+    if (ventaRows.length === 0) {
       return res.status(404).json({ error: 'Venta no encontrada' });
     }
+    const venta = ventaRows[0];
+
+    // 2) Traemos los artículos de esa venta
+    const [articulosRows] = await pool.query(
+      'SELECT * FROM VentaArticulos WHERE ventaId = ?',
+      [ventaId]
+    );
+
+    // 3) Combinamos en la respuesta
+    venta.articulos = articulosRows;
     res.status(200).json(venta);
-  } catch (err) {
-    console.error('Error al obtener la venta:', err);
-    res.status(500).json({ error: 'Error al obtener la venta', details: err.message });
+  } catch (error) {
+    console.error('Error al obtener la venta:', error);
+    res.status(500).json({ error: 'Error al obtener la venta', details: error.message });
   }
 });
 
-// PUT /ventas/:id → Editar una venta existente
+// Actualizar una venta existente
 router.put('/:id', async (req, res) => {
-  const rawId = req.params.id;
-  const id = rawId.trim(); // Limpiar el ID
-
-  console.log('PUT /ventas/:id llamada con id:', id);
+  const ventaId = req.params.id;
+  // Suponemos que en el body puedes actualizar totalVenta, vendedorId, formaPagoId y la lista de artículos
   try {
-    const datosVenta = req.body;
-    const ventaActualizada = await Venta.findByIdAndUpdate(id, datosVenta, { new: true, runValidators: true });
-    if (!ventaActualizada) {
-      console.log('Venta no encontrada para actualizar');
+    const { totalVenta, vendedorId, formaPagoId, articulos } = req.body;
+
+    // 1) Actualizar la venta principal
+    const [result] = await pool.execute(
+      `UPDATE Ventas
+       SET totalVenta = ?, vendedorId = ?, formaPagoId = ?
+       WHERE id = ?`,
+      [totalVenta, vendedorId || null, formaPagoId || null, ventaId]
+    );
+
+    if (result.affectedRows === 0) {
       return res.status(404).json({ error: 'Venta no encontrada para actualizar' });
     }
-    console.log('Venta actualizada correctamente:', ventaActualizada);
+
+    // 2) Si hay un array de artículos en el body, actualizar "VentaArticulos"
+    //    Podemos primero eliminar los artículos antiguos y luego insertar los nuevos
+    if (Array.isArray(articulos)) {
+      // Eliminar artículos antiguos
+      await pool.execute('DELETE FROM VentaArticulos WHERE ventaId = ?', [ventaId]);
+      // Insertar los nuevos
+      for (const item of articulos) {
+        const { articuloId, cantidad, precio, total } = item;
+        await pool.execute(
+          `INSERT INTO VentaArticulos (ventaId, articuloId, cantidad, precio, total)
+           VALUES (?, ?, ?, ?, ?)`,
+          [ventaId, articuloId, cantidad, precio, total]
+        );
+      }
+    }
+
+    // 3) Devolver la venta actualizada con sus artículos
+    const [updatedVentaRows] = await pool.query('SELECT * FROM Ventas WHERE id = ?', [ventaId]);
+    const [updatedArticulos] = await pool.query(
+      'SELECT * FROM VentaArticulos WHERE ventaId = ?',
+      [ventaId]
+    );
+    const ventaActualizada = updatedVentaRows[0];
+    ventaActualizada.articulos = updatedArticulos;
+
     res.json({ message: 'Venta actualizada correctamente', venta: ventaActualizada });
-  } catch (err) {
-    console.error('Error al actualizar la venta:', err);
-    res.status(400).json({ error: 'Error al actualizar la venta', details: err.message });
+  } catch (error) {
+    console.error('Error al actualizar la venta:', error);
+    res.status(500).json({ error: 'Error al actualizar la venta', details: error.message });
   }
 });
 
-// DELETE /ventas/:id → Eliminar una venta existente
+// Eliminar una venta
 router.delete('/:id', async (req, res) => {
-    const rawId = req.params.id;
-    const id = rawId.trim(); // Limpiar el ID
-  
-    console.log('DELETE /ventas/:id llamada con id:', id);
-    try {
-      const ventaEliminada = await Venta.findByIdAndDelete(id);
-      if (!ventaEliminada) {
-        console.log('Venta no encontrada para eliminar');
-        return res.status(404).json({ error: 'Venta no encontrada para eliminar' });
-      }
-      console.log('Venta eliminada correctamente:', ventaEliminada);
-      res.json({ message: 'Venta eliminada correctamente' });
-    } catch (err) {
-      console.error('Error al eliminar la venta:', err);
-      res.status(500).json({ error: 'Error al eliminar la venta', details: err.message });
-    }
-  });
-  
-// GET /ventas/estadisticas → Obtener estadísticas de ventas
-router.get('/estadisticas', async (req, res) => {
-  console.log('GET /ventas/estadisticas llamada');
   try {
-    const totalDiario = await Venta.aggregate([
-      { $group: { _id: null, total: { $sum: "$totalVenta" } } }
-    ]);
-
-    const ventasPorFormaPago = await Venta.aggregate([
-      { $group: { _id: "$formaPago", total: { $sum: "$totalVenta" } } }
-    ]);
-
-    const ventasPorVendedor = await Venta.aggregate([
-      { $group: { _id: "$vendedor", total: { $sum: "$totalVenta" } } }
-    ]);
-
-    const ventasPorArticulo = await Venta.aggregate([
-      { $unwind: "$articulos" },
-      { $group: { _id: "$articulos.nombre", total: { $sum: "$articulos.total" } } }
-    ]);
-
-    res.status(200).json({
-      totalDiario: totalDiario[0]?.total || 0,
-      ventasPorFormaPago,
-      ventasPorVendedor,
-      ventasPorArticulo
-    });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Error al obtener estadísticas', details: err.message });
+    const [result] = await pool.execute('DELETE FROM Ventas WHERE id = ?', [req.params.id]);
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Venta no encontrada para eliminar' });
+    }
+    // Dado que VentaArticulos tiene ON DELETE CASCADE (si lo configuraste),
+    // los artículos asociados se eliminarán automáticamente.
+    res.json({ message: 'Venta eliminada correctamente' });
+  } catch (error) {
+    console.error('Error al eliminar la venta:', error);
+    res.status(500).json({ error: 'Error al eliminar la venta', details: error.message });
   }
 });
 
