@@ -20,10 +20,11 @@ router.post('/', async (req, res) => {
 
     // 1) Insertamos la venta en la tabla Ventas
     const [ventaResult] = await pool.execute(
-      `INSERT INTO Ventas (totalVenta, vendedorId, formaPagoId)
-       VALUES (?, ?, ?)`,
+      `INSERT INTO Ventas (totalVenta, vendedorId, formaPagoId, fecha)
+       VALUES (?, ?, ?, NOW())`,
       [totalVenta, vendedorId || null, formaPagoId || null]
     );
+    
     const ventaId = ventaResult.insertId;
 
     // 2) Insertamos artículos en VentaArticulos
