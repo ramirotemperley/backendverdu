@@ -1,154 +1,185 @@
 // routes/ventas.js
 const express = require('express');
-const router = express.Router();
+const http    = require('http');
+const router  = express.Router();
 const { pool } = require('../config/database');
 
-// Crear una venta nueva
+/* ------------------------------------------------------------------ */
+/*  POST /ventas – crear una venta                                     */
+/* ------------------------------------------------------------------ */
 router.post('/', async (req, res) => {
-  // Ejemplo de body:
-  // {
-  //   "totalVenta": 100.5,
-  //   "vendedorId": 1,
-  //   "formaPagoId": 2,
-  //   "articulos": [
-  //       { "articuloId": 1, "cantidad": 2, "precio": 30, "total": 60 },
-  //       { "articuloId": 2, "cantidad": 1, "precio": 40.5, "total": 40.5 }
-  //   ]
-  // }
   try {
     const { totalVenta, vendedorId, formaPagoId, articulos } = req.body;
+    if (!Array.isArray(articulos) || articulos.length === 0) {
+      return res.status(400).json({ error: 'La venta debe incluir al menos un artículo.' });
+    }
 
-    // 1) Insertamos la venta en la tabla Ventas
+    // 1) Insert en Ventas
     const [ventaResult] = await pool.execute(
       `INSERT INTO Ventas (totalVenta, vendedorId, formaPagoId, fecha)
        VALUES (?, ?, ?, NOW())`,
-      [totalVenta, vendedorId || null, formaPagoId || null]
+      [ totalVenta, vendedorId, formaPagoId ]
     );
-    
     const ventaId = ventaResult.insertId;
 
-    // 2) Insertamos artículos en VentaArticulos
-    //    Solo si en el body viene un array de articulos
-    if (Array.isArray(articulos)) {
-      for (const item of articulos) {
-        const { articuloId, cantidad, precio, total } = item;
-        await pool.execute(
-          `INSERT INTO VentaArticulos (ventaId, articuloId, cantidad, precio, total)
-           VALUES (?, ?, ?, ?, ?)`,
-          [ventaId, articuloId, cantidad, precio, total]
-        );
-      }
+    // 2) Insert en VentaArticulos
+    for (const it of articulos) {
+      const pesoLimpio = it.peso != null ? parseFloat(it.peso) : null;
+      await pool.execute(
+        `INSERT INTO VentaArticulos
+           (ventaId, articuloId, cantidad, precio, total, peso)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [ ventaId, it.articuloId, it.cantidad, it.precio, it.total, pesoLimpio ]
+      );
     }
 
     res.status(201).json({ message: 'Venta creada correctamente', ventaId });
-  } catch (error) {
-    console.error('Error al crear la venta:', error);
-    res.status(500).json({ error: 'Error al crear la venta', details: error.message });
+  } catch (e) {
+    console.error('Error al crear la venta:', e);
+    res.status(500).json({ error: 'Error al crear la venta', details: e.message });
   }
 });
 
-// Obtener todas las ventas
-router.get('/', async (req, res) => {
+/* ------------------------------------------------------------------ */
+/*  GET /ventas – historial completo                                   */
+/* ------------------------------------------------------------------ */
+router.get('/', async (_req, res) => {
   try {
-    // Podemos traer la info básica de la venta
-    const [ventas] = await pool.query('SELECT * FROM Ventas');
-    res.status(200).json(ventas);
-  } catch (error) {
-    console.error(error);
+    const [ventas] = await pool.query(`
+      SELECT
+        v.id,
+        v.totalVenta,
+        v.fecha,
+        v.vendedorId,
+        v.formaPagoId,
+        COALESCE(u.nombre,'–') AS vendedorNombre,
+        COALESCE(fp.nombre,'–') AS formaPagoNombre
+      FROM Ventas v
+      LEFT JOIN Usuarios   u  ON v.vendedorId  = u.id
+      LEFT JOIN FormasPago fp ON v.formaPagoId = fp.id
+      ORDER BY v.id DESC
+    `);
+    res.json(ventas);
+  } catch (e) {
+    console.error('Error al obtener las ventas:', e);
     res.status(500).json({ error: 'Error al obtener las ventas' });
   }
 });
 
-// Obtener una venta específica con sus artículos
+/* ------------------------------------------------------------------ */
+/*  GET /ventas/:id – detalle de una venta                             */
+/* ------------------------------------------------------------------ */
 router.get('/:id', async (req, res) => {
-  const ventaId = req.params.id;
   try {
-    // 1) Traemos la venta
-    const [ventaRows] = await pool.query('SELECT * FROM Ventas WHERE id = ?', [ventaId]);
-    if (ventaRows.length === 0) {
-      return res.status(404).json({ error: 'Venta no encontrada' });
-    }
-    const venta = ventaRows[0];
+    const ventaId = req.params.id;
+    const [vRows] = await pool.query('SELECT * FROM Ventas WHERE id = ?', [ventaId]);
+    if (!vRows.length) return res.status(404).json({ error: 'Venta no encontrada' });
 
-    // 2) Traemos los artículos de esa venta
-    const [articulosRows] = await pool.query(
-      'SELECT * FROM VentaArticulos WHERE ventaId = ?',
-      [ventaId]
-    );
-
-    // 3) Combinamos en la respuesta
-    venta.articulos = articulosRows;
-    res.status(200).json(venta);
-  } catch (error) {
-    console.error('Error al obtener la venta:', error);
-    res.status(500).json({ error: 'Error al obtener la venta', details: error.message });
+    const [arts] = await pool.query('SELECT * FROM VentaArticulos WHERE ventaId = ?', [ventaId]);
+    res.json({ ...vRows[0], articulos: arts });
+  } catch (e) {
+    console.error('Error al obtener la venta:', e);
+    res.status(500).json({ error: 'Error al obtener la venta', details: e.message });
   }
 });
 
-// Actualizar una venta existente
-router.put('/:id', async (req, res) => {
-  const ventaId = req.params.id;
-  // Suponemos que en el body puedes actualizar totalVenta, vendedorId, formaPagoId y la lista de artículos
-  try {
-    const { totalVenta, vendedorId, formaPagoId, articulos } = req.body;
-
-    // 1) Actualizar la venta principal
-    const [result] = await pool.execute(
-      `UPDATE Ventas
-       SET totalVenta = ?, vendedorId = ?, formaPagoId = ?
-       WHERE id = ?`,
-      [totalVenta, vendedorId || null, formaPagoId || null, ventaId]
-    );
-
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ error: 'Venta no encontrada para actualizar' });
-    }
-
-    // 2) Si hay un array de artículos en el body, actualizar "VentaArticulos"
-    //    Podemos primero eliminar los artículos antiguos y luego insertar los nuevos
-    if (Array.isArray(articulos)) {
-      // Eliminar artículos antiguos
-      await pool.execute('DELETE FROM VentaArticulos WHERE ventaId = ?', [ventaId]);
-      // Insertar los nuevos
-      for (const item of articulos) {
-        const { articuloId, cantidad, precio, total } = item;
-        await pool.execute(
-          `INSERT INTO VentaArticulos (ventaId, articuloId, cantidad, precio, total)
-           VALUES (?, ?, ?, ?, ?)`,
-          [ventaId, articuloId, cantidad, precio, total]
-        );
-      }
-    }
-
-    // 3) Devolver la venta actualizada con sus artículos
-    const [updatedVentaRows] = await pool.query('SELECT * FROM Ventas WHERE id = ?', [ventaId]);
-    const [updatedArticulos] = await pool.query(
-      'SELECT * FROM VentaArticulos WHERE ventaId = ?',
-      [ventaId]
-    );
-    const ventaActualizada = updatedVentaRows[0];
-    ventaActualizada.articulos = updatedArticulos;
-
-    res.json({ message: 'Venta actualizada correctamente', venta: ventaActualizada });
-  } catch (error) {
-    console.error('Error al actualizar la venta:', error);
-    res.status(500).json({ error: 'Error al actualizar la venta', details: error.message });
-  }
-});
-
-// Eliminar una venta
+/* ------------------------------------------------------------------ */
+/*  DELETE /ventas/:id – eliminar venta                                */
+/* ------------------------------------------------------------------ */
 router.delete('/:id', async (req, res) => {
   try {
-    const [result] = await pool.execute('DELETE FROM Ventas WHERE id = ?', [req.params.id]);
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ error: 'Venta no encontrada para eliminar' });
-    }
-    // Dado que VentaArticulos tiene ON DELETE CASCADE (si lo configuraste),
-    // los artículos asociados se eliminarán automáticamente.
+    const [r] = await pool.execute('DELETE FROM Ventas WHERE id = ?', [req.params.id]);
+    if (r.affectedRows === 0) return res.status(404).json({ error: 'Venta no encontrada para eliminar' });
     res.json({ message: 'Venta eliminada correctamente' });
-  } catch (error) {
-    console.error('Error al eliminar la venta:', error);
-    res.status(500).json({ error: 'Error al eliminar la venta', details: error.message });
+  } catch (e) {
+    console.error('Error al eliminar la venta:', e);
+    res.status(500).json({ error: 'Error al eliminar la venta', details: e.message });
+  }
+});
+
+/* ------------------------------------------------------------------ */
+/*  POST /ventas/imprimir – reimpresión única                           */
+/* ------------------------------------------------------------------ */
+router.post('/imprimir', async (req, res) => {
+  try {
+    let lista;
+
+    if (req.body.id) {
+      // ————————————————————————————————————————————————————————
+      // Reimpresión: cargamos subtotales reales desde la DB
+      const ventaId = req.body.id;
+      const [rows] = await pool.query(
+        `SELECT
+           va.total AS precio,
+           va.peso  AS peso,
+           COALESCE(a.nombre,'VERDULERIA') AS nombre
+         FROM VentaArticulos va
+         LEFT JOIN articulos a       ON va.articuloId = a.id
+         WHERE va.ventaId = ?`,
+        [ventaId]
+      );
+      lista = rows.map(it => ({
+        nombre: it.nombre,
+        precio: Number(it.precio),
+        peso:   it.peso
+      }));
+    } else {
+      // ————————————————————————————————————————————————————————
+      // Primera impresión: recibimos articulosPrint en el body
+      const { articulosPrint, articulos } = req.body;
+      lista = articulosPrint || articulos;
+    }
+
+    if (!Array.isArray(lista) || lista.length === 0) {
+      return res.status(400).json({ error: 'Ticket vacío o sin artículos.' });
+    }
+
+    // — Formatear texto idéntico a la impresión inicial —
+    const ahora   = new Date();
+    const fecha   = ahora.toLocaleDateString('es-AR');
+    const hora    = ahora.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const encabezado = `VERDULERIA\n${fecha} ${hora}\n\n`;
+    const cuerpo = lista.map(it => {
+      const nom = it.nombre
+        .toUpperCase()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+        .replace(/[^A-Z0-9 ]/g,'');
+      let pesoStr = '-';
+      if (it.peso != null) {
+        const p = parseFloat(it.peso);
+        pesoStr = p >= 50 ? `${p.toFixed(0)}g` : `${p.toFixed(2)}kg`;
+      }
+      const pr = `$${it.precio.toFixed(2)}`;
+      return `${nom.padEnd(12)} ${pesoStr.padEnd(6)} ${pr.padStart(8)}`;
+    }).join('\n');
+    const total = lista.reduce((s, it) => s + it.precio, 0);
+    const texto = encabezado + cuerpo +
+                  `\n\nTOTAL:           $${total.toFixed(2)}\n\nGRACIAS POR SU COMPRA\n\n\n`;
+
+    console.log('→ Reimpresión:\n', texto);
+
+    // — Enviar a impresora térmica una sola vez —
+    const payload = JSON.stringify({ text: texto });
+    const options = {
+      hostname: 'localhost',
+      port:     3002,
+      path:     '/print',
+      method:   'POST',
+      headers: {
+        'Content-Type':   'application/json',
+        'Content-Length': Buffer.byteLength(payload)
+      }
+    };
+    const pr = http.request(options, r => r.on('data', d => console.log('Resp impresora:', d.toString())));
+    pr.on('error', e => console.error('Error impresora:', e.message));
+    pr.write(payload);
+    pr.end();
+
+    // — Responder OK al cliente —
+    res.json({ mensaje: 'Ticket reenviado a impresión' });
+  } catch (e) {
+    console.error('Error en /ventas/imprimir:', e);
+    res.status(500).json({ error: 'Error interno en impresión', details: e.message });
   }
 });
 
